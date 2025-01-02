@@ -1,15 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
-project(protogen_app_test)
+project(faces_protogen_app)
 
 include(FetchContent)
 
-set(PROTOGEN_APP_ID "protogenapptest")
+set(PROTOGEN_APP_ID "faces")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(PROTOGEN_APP_SOURCES
-    "${PROJECT_SOURCE_DIR}/src/ProtogenAppTest.cpp"
+    "${PROJECT_SOURCE_DIR}/src/Faces.cpp"
 )
 
 add_library(${PROJECT_NAME} MODULE ${PROTOGEN_APP_SOURCES})

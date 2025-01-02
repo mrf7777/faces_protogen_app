@@ -7,16 +7,16 @@
 
 using namespace protogen;
 
-class ProtogenAppTest : public protogen::IProtogenApp {
+class Faces : public protogen::IProtogenApp {
 public:
-    ProtogenAppTest()
+    Faces()
         : m_deviceResolution(Resolution(0, 0)),
         m_mouthProvider(nullptr),
         m_active(false)
     {}
 
     std::string name() const override {
-        return "Protogen App Test";
+        return "Faces";
     }
 
     std::string id() const override {
@@ -24,7 +24,7 @@ public:
     }
 
     std::string description() const override {
-        return "This is a demo protogen app that is a simple template for education.";
+        return "An app to display faces and move your mouth using a web interface and audio device.";
     }
 
     bool sanityCheck([[maybe_unused]] std::string& errorMessage) const override {
@@ -123,7 +123,7 @@ private:
 // Interface to create and destroy you app.
 // This is how your app is created and consumed as a library.
 extern "C" IProtogenApp * create_app() {
-    return new ProtogenAppTest();
+    return new Faces();
 }
 
 extern "C" void destroy_app(IProtogenApp * app) {
