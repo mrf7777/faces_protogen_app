@@ -1,9 +1,16 @@
 #include <protogen/IProtogenApp.hpp>
 #include <protogen/IProportionProvider.hpp>
 #include <protogen/Resolution.hpp>
+#include <faces/renderer.h>
+#include <faces/protogen_head_state.h>
 #include <cmake_vars.h>
 
+#include <mutex>
+#include <memory>
 #include <cmath>
+#include <atomic>
+#include <thread>
+#include <condition_variable>
 
 using namespace protogen;
 
@@ -12,7 +19,13 @@ public:
     Faces()
         : m_deviceResolution(Resolution(0, 0)),
         m_mouthProvider(nullptr),
-        m_active(false)
+        m_active(false),
+        m_initialized(false),
+        m_renderer(nullptr),
+        m_state(),
+        m_blinkingThread(),
+        m_mouthThread(),
+        m_resources()
     {}
 
     std::string name() const override {
@@ -32,26 +45,134 @@ public:
     }
 
     void setActive(bool active) override {
+        std::cout << "Faces setActive: " << active << std::endl;
         m_active = active;
+
+        if(!m_initialized) {
+            std::cout << "Faces initializing with resources: " << m_resources << std::endl;
+            const std::string emotions_directory = m_resources / std::filesystem::path("static/protogen_images/eyes");
+            const std::string mouth_images_directory = m_resources / std::filesystem::path("static/protogen_images/mouth");
+            const std::string static_image_path = m_resources / std::filesystem::path("static/protogen_images/static/nose.png");
+
+            const EmotionDrawer emotion_drawer(emotions_directory);
+            std::cout << "Faces initialized EmotionDrawer" << std::endl;
+
+            m_renderer = std::unique_ptr<Renderer>(new Renderer(emotion_drawer, mouth_images_directory, static_image_path));
+            std::cout << "Faces initialized Renderer" << std::endl;
+
+            m_blinkingThread = std::thread(&Faces::blinkingThread, this);
+            std::cout << "Faces initialized blinkingThread" << std::endl;
+            m_mouthThread = std::thread(&Faces::mouthThread, this);
+            std::cout << "Faces initialized mouthThread" << std::endl;
+
+            m_initialized = true;
+            std::cout << "Faces initialized" << std::endl;
+        }
+    }
+
+    static double normalize(double value, double min, double max) {
+        return (value - min) / (max - min);
+    }
+
+    void blinkingThread() {        
+        // Proportion animation over time
+        //
+        //     ^
+        //     |
+        //     (proportion)
+        // 1.0 |**********       *********
+        //     |          *     *
+        //     |           *   *
+        //     |            * *
+        //     |             *
+        // 0.0 |----------------------------(time)->
+        //
+
+        static constexpr double animation_action_start_time = 4.3;
+        static constexpr double animation_action_end_time = 5.0;
+        static constexpr double animation_action_mid_time = (animation_action_start_time + animation_action_end_time) / 2;
+        static_assert(animation_action_start_time < animation_action_end_time);
+        
+        while(true) {
+            // TODO: consider condition variable instead of busy waiting
+            if(m_active) {
+                double delay_seconds = 1.0 / framerate();
+
+                const auto system_time = std::chrono::system_clock::now();
+                const auto time_epoch = system_time.time_since_epoch();
+                const double time_epoch_seconds = std::chrono::duration_cast<std::chrono::milliseconds>(time_epoch).count() / 1000.0;
+                const double animation_time = std::fmod(time_epoch_seconds, animation_action_end_time);
+
+                Proportion eye_openness = Proportion::make(1.0).value();
+                if(animation_time < animation_action_start_time) {
+                    eye_openness = Proportion::make(1.0).value();
+                } else if(animation_action_start_time <= animation_time && animation_time <= animation_action_mid_time) {
+                    eye_openness = Proportion::make(std::lerp(1.0, 0.0, normalize(animation_time, animation_action_start_time, animation_action_mid_time))).value();
+                } else if(animation_action_mid_time <= animation_time && animation_time <= animation_action_end_time) {
+                    eye_openness = Proportion::make(std::lerp(0.0, 1.0, normalize(animation_time, animation_action_mid_time, animation_action_end_time))).value();
+                } else {
+                    eye_openness = Proportion::make(1.0).value();
+                }
+                m_state.setEyeOpenness(eye_openness);
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int64_t>(delay_seconds * 1000)));
+            }
+        }
+    }
+
+    void mouthThread() {
+        while(true) {
+            // TODO: consider condition variable instead of busy waiting
+            if(m_active) {
+                m_state.setMouthOpenness(m_mouthProvider->proportion());
+                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(1000/framerate())));
+            }
+        }
     }
 
     void receiveResourcesDirectory([[maybe_unused]] const std::string& resourcesDirectory) override {
+        m_resources = resourcesDirectory;
+    }
+
+    void receiveUserDataDirectory([[maybe_unused]] const std::string& userDataDirectory) override {
     }
 
     Endpoints serverEndpoints() const override {
         using httplib::Request, httplib::Response;
         return Endpoints{
             {
-                Endpoint{HttpMethod::Get, "/home"},
-                [](const Request&, Response& res){ res.set_content("This is the homepage.", "text/html"); }
+                Endpoint{HttpMethod::Get, "/emotion/all"},
+                [&](const Request&, Response& res){
+                    res.set_content(m_renderer->emotionDrawer().emotionsSeparatedByNewline(), "text/plain");
+                }
             },
             {
-                Endpoint{HttpMethod::Get, "/hello"},
-                [](const Request&, Response& res){ res.set_content("Hello!", "text/plain"); }
+                Endpoint{HttpMethod::Get, "/emotion"},
+                [&](const Request&, Response& res){
+                    const auto emotion = m_state.emotion();
+                    res.set_content(emotion, "text/html");
+                }
             },
             {
-                Endpoint{HttpMethod::Get, "/hello/website"},
-                [](const Request&, Response& res){ res.set_content("Hello, website!", "text/plain"); }
+                Endpoint{HttpMethod::Put, "/emotion"},
+                [&](const Request& req, Response&){
+                    m_state.setEmotion(req.body);
+                }
+            },
+            {
+                Endpoint{HttpMethod::Get, "/blank"},
+                [&](const Request&, Response& res){
+                    const auto blank = m_state.blank();
+                    const auto blank_string = blank ? "true" : "false";
+                    res.set_content(blank_string, "text/plain");
+                }
+            },
+            {
+                Endpoint{HttpMethod::Put, "/blank"},
+                [&](const Request& req, Response&){
+                    const auto blank = req.body == "true";
+                    m_state.setBlank(blank);
+                }
             },
         };
     }
@@ -73,33 +194,13 @@ public:
     }
 
     void render(ICanvas& canvas) const override {
-        if(m_mouthProvider) {
-            // draw background
-            canvas.fill(127, 127, 127);
-
-            // draw based on mouth open proportion
-            const double mouth_open_proportion = m_mouthProvider->proportion();
-            const uint8_t value = std::floor(std::lerp(0.0, 255.0, mouth_open_proportion));
-            canvas.drawPolygon({{64, 0}, {64 + 32, 0}, {64 + 32, 32}}, 0, value, value, true);
-            canvas.drawEllipse(0, 0, 32, 32, 0, value, 0, true);
-            canvas.drawLine(32, 0, 64, 32, value, 0, 0);
-            canvas.drawLine(32, 32, 64 + 32, 0, 0, 0, value);
-            // Imagine a circle at the right-most side of the canvas.
-            // Draw a line from the center to the circle based on the mouth open proportion.
-            const double angle = std::lerp(0.0, 2*M_PI, mouth_open_proportion);
-            const double radius = 13;
-            const double x = 64 + 32 + 16 + radius * std::cos(angle);
-            const double y = 16 + radius * std::sin(angle);
-            canvas.drawLine(64 + 32 + 16, 16, x, y, 0, value, 0);
-            // draw outline of circle
-            canvas.drawEllipse(64 + 32, 0, 32, 32, 0, 0, value, false);
-        } else {
-            canvas.fill(127, 0, 0);
+        if(m_initialized) {
+            m_renderer->render(m_state, canvas);    
         }
     }
 
     float framerate() const override {
-        return 30;
+        return 24.0;
     }
 
     void receiveDeviceResolution(const Resolution& resolution) override {
@@ -107,7 +208,7 @@ public:
     }
 
     std::vector<Resolution> supportedResolutions() const override {
-        return {m_deviceResolution};
+        return {Resolution(128, 32)};
     }
 
     void setMouthProportionProvider(std::shared_ptr<IProportionProvider> provider) {
@@ -115,9 +216,16 @@ public:
     }
 
 private:
+    mutable std::mutex m_renderMutex;
     Resolution m_deviceResolution;
     std::shared_ptr<IProportionProvider> m_mouthProvider;
-    bool m_active;
+    std::atomic_bool m_active;
+    bool m_initialized;
+    std::unique_ptr<Renderer> m_renderer;
+    mutable ProtogenHeadState m_state;
+    std::thread m_blinkingThread;
+    std::thread m_mouthThread;
+    std::filesystem::path m_resources;
 };
 
 // Interface to create and destroy you app.

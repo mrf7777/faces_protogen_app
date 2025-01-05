@@ -1,5 +1,30 @@
+<!DOCTYPE html>
 <html>
-<body>
-    <h1>Hello, World!</h1>
-</body>
+	<head>
+		<title>Protogen Controller</title>
+		<meta name="viewport" content="height=device-height, initial-scale=1.0, minimum-scale=1.0">
+		<link rel="stylesheet" href="/apps/faces/static/style.css">
+	</head>
+	<body>
+		<script src="/apps/faces/static/fragments/toolbar.js"></script>
+		<button id="enable-button">Enable</button>
+		<h3>Protogen Controller</h3>
+		<div id="emotion-options-container">
+		</div>
+		<hr>
+		<fieldset id="brightness-options-container">
+		</fieldset>
+		<hr>
+		<fieldset id="screen-blank">
+			<legend>Screen Blank</legend>
+			<input type="radio" id="screen-blank-yes" name="screen-blank" value="true">
+			<label for="screen-blank-yes">Yes</label>
+			<input type="radio" id="screen-blank-no" name="screen-blank" value="false">
+			<label for="screen-blank-no">No</label>
+		</fieldset>
+		<hr>
+		<input type="range" id="audio-level" name="audio-level", min="0" max="255" value="0" step="1">
+
+		<script src="/apps/faces/static/face.js"></script>
+	</body>
 </html>
