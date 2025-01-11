@@ -1,6 +1,7 @@
 #include <protogen/IProtogenApp.hpp>
 #include <protogen/IProportionProvider.hpp>
 #include <protogen/Resolution.hpp>
+#include <protogen/StandardAttributeStore.hpp>
 #include <faces/renderer.h>
 #include <faces/protogen_head_state.h>
 #include <cmake_vars.h>
@@ -20,54 +21,83 @@ public:
         : m_deviceResolution(Resolution(0, 0)),
         m_mouthProvider(nullptr),
         m_active(false),
-        m_initialized(false),
         m_renderer(nullptr),
         m_state(),
+        m_webServerThread(),
+        m_webServerPort(-1),
         m_blinkingThread(),
         m_mouthThread(),
-        m_resources()
-    {}
-
-    std::string name() const override {
-        return "Faces";
-    }
-
-    std::string id() const override {
-        return PROTOGEN_APP_ID;
-    }
-
-    std::string description() const override {
-        return "An app to display faces and move your mouth using a web interface and audio device.";
+        m_resources(),
+        m_attributes(std::shared_ptr<StandardAttributeStore>(new StandardAttributeStore()))
+    {
+        using namespace protogen::attributes;
+        using Access = protogen::attributes::IAttributeStore::Access;
+        m_attributes->adminSetAttribute(ATTRIBUTE_ID, PROTOGEN_APP_ID, Access::Read);
+        m_attributes->adminSetAttribute(ATTRIBUTE_NAME, "Faces", Access::Read);
+        m_attributes->adminSetAttribute(ATTRIBUTE_DESCRIPTION, "An app to display faces and move your mouth using a web interface and audio device.", Access::Read);
+        m_attributes->adminSetAttribute(ATTRIBUTE_THUMBNAIL, "/static/thumbnail.png", Access::Read);
+        m_attributes->adminSetAttribute(ATTRIBUTE_MAIN_PAGE, "/static/index.html", Access::Read);
+        m_attributes->adminSetAttribute(ATTRIBUTE_HOME_PAGE, "https://github.com/mrf7777/faces_protogen_app", Access::Read);
     }
 
     bool sanityCheck([[maybe_unused]] std::string& errorMessage) const override {
         return true;
     }
 
+    void initialize() override {
+        std::cout << "Faces initializing with resources: " << m_resources << std::endl;
+        const std::string emotions_directory = m_resources / std::filesystem::path("static/protogen_images/eyes");
+        const std::string mouth_images_directory = m_resources / std::filesystem::path("static/protogen_images/mouth");
+        const std::string static_image_path = m_resources / std::filesystem::path("static/protogen_images/static/nose.png");
+
+        const EmotionDrawer emotion_drawer(emotions_directory);
+        std::cout << "Faces initialized EmotionDrawer" << std::endl;
+
+        m_renderer = std::unique_ptr<Renderer>(new Renderer(emotion_drawer, mouth_images_directory, static_image_path));
+        std::cout << "Faces initialized Renderer" << std::endl;
+
+        m_blinkingThread = std::thread(&Faces::blinkingThread, this);
+        std::cout << "Faces initialized blinkingThread" << std::endl;
+        m_mouthThread = std::thread(&Faces::mouthThread, this);
+        std::cout << "Faces initialized mouthThread" << std::endl;
+
+        std::cout << "Faces initialized" << std::endl;
+
+        m_webServerThread = std::thread([this](){
+            using httplib::Request, httplib::Response;
+            auto server = httplib::Server();
+
+            server.set_mount_point("/static", (m_resources / "static").string());
+
+            server.Get("/emotion/all", [this](const Request&, Response& res){
+                res.set_content(m_renderer->emotionDrawer().emotionsSeparatedByNewline(), "text/plain");
+            });
+            server.Get("/emotion", [this](const Request&, Response& res){
+                const auto emotion = m_state.emotion();
+                res.set_content(emotion, "text/html");
+            });
+            server.Put("/emotion", [this](const Request& req, Response&){
+                m_state.setEmotion(req.body);
+            });
+            server.Get("/blank", [this](const Request&, Response& res){
+                const auto blank = m_state.blank();
+                const auto blank_string = blank ? "true" : "false";
+                res.set_content(blank_string, "text/plain");
+            });
+            server.Put("/blank", [this](const Request& req, Response&){
+                const auto blank = req.body == "true";
+                m_state.setBlank(blank);
+            });
+
+            m_webServerPort = server.bind_to_any_port("0.0.0.0");
+            server.listen_after_bind();
+        });
+
+    }
+
     void setActive(bool active) override {
         std::cout << "Faces setActive: " << active << std::endl;
         m_active = active;
-
-        if(!m_initialized) {
-            std::cout << "Faces initializing with resources: " << m_resources << std::endl;
-            const std::string emotions_directory = m_resources / std::filesystem::path("static/protogen_images/eyes");
-            const std::string mouth_images_directory = m_resources / std::filesystem::path("static/protogen_images/mouth");
-            const std::string static_image_path = m_resources / std::filesystem::path("static/protogen_images/static/nose.png");
-
-            const EmotionDrawer emotion_drawer(emotions_directory);
-            std::cout << "Faces initialized EmotionDrawer" << std::endl;
-
-            m_renderer = std::unique_ptr<Renderer>(new Renderer(emotion_drawer, mouth_images_directory, static_image_path));
-            std::cout << "Faces initialized Renderer" << std::endl;
-
-            m_blinkingThread = std::thread(&Faces::blinkingThread, this);
-            std::cout << "Faces initialized blinkingThread" << std::endl;
-            m_mouthThread = std::thread(&Faces::mouthThread, this);
-            std::cout << "Faces initialized mouthThread" << std::endl;
-
-            m_initialized = true;
-            std::cout << "Faces initialized" << std::endl;
-        }
     }
 
     static double normalize(double value, double min, double max) {
@@ -137,66 +167,12 @@ public:
     void receiveUserDataDirectory([[maybe_unused]] const std::string& userDataDirectory) override {
     }
 
-    Endpoints serverEndpoints() const override {
-        using httplib::Request, httplib::Response;
-        return Endpoints{
-            {
-                Endpoint{HttpMethod::Get, "/emotion/all"},
-                [&](const Request&, Response& res){
-                    res.set_content(m_renderer->emotionDrawer().emotionsSeparatedByNewline(), "text/plain");
-                }
-            },
-            {
-                Endpoint{HttpMethod::Get, "/emotion"},
-                [&](const Request&, Response& res){
-                    const auto emotion = m_state.emotion();
-                    res.set_content(emotion, "text/html");
-                }
-            },
-            {
-                Endpoint{HttpMethod::Put, "/emotion"},
-                [&](const Request& req, Response&){
-                    m_state.setEmotion(req.body);
-                }
-            },
-            {
-                Endpoint{HttpMethod::Get, "/blank"},
-                [&](const Request&, Response& res){
-                    const auto blank = m_state.blank();
-                    const auto blank_string = blank ? "true" : "false";
-                    res.set_content(blank_string, "text/plain");
-                }
-            },
-            {
-                Endpoint{HttpMethod::Put, "/blank"},
-                [&](const Request& req, Response&){
-                    const auto blank = req.body == "true";
-                    m_state.setBlank(blank);
-                }
-            },
-        };
-    }
-
-    std::string homePage() const override {
-        return "/static/index.html";
-    }
-
-    std::string staticFilesDirectory() const override {
-        return "/static";
-    }
-
-    std::string staticFilesPath() const override {
-        return "/static";
-    }
-
-    std::string thumbnail() const override {
-        return "/static/thumbnail.png";
+    int webPort() const override {
+        return m_webServerPort;
     }
 
     void render(ICanvas& canvas) const override {
-        if(m_initialized) {
-            m_renderer->render(m_state, canvas);    
-        }
+        m_renderer->render(m_state, canvas);    
     }
 
     float framerate() const override {
@@ -215,17 +191,23 @@ public:
         m_mouthProvider = provider;
     }
 
+    std::shared_ptr<attributes::IAttributeStore> getAttributeStore() override {
+        return m_attributes;
+    }
+
 private:
     mutable std::mutex m_renderMutex;
     Resolution m_deviceResolution;
     std::shared_ptr<IProportionProvider> m_mouthProvider;
     std::atomic_bool m_active;
-    bool m_initialized;
     std::unique_ptr<Renderer> m_renderer;
     mutable ProtogenHeadState m_state;
+    std::thread m_webServerThread;
+    int m_webServerPort;
     std::thread m_blinkingThread;
     std::thread m_mouthThread;
     std::filesystem::path m_resources;
+    std::shared_ptr<StandardAttributeStore> m_attributes;
 };
 
 // Interface to create and destroy you app.
